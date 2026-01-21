@@ -1,8 +1,9 @@
 # Default configuration for dataset creation and model training
 fps: 1.0
 resize: 640x360
-color_mode: gray
+color_mode: color  # Changed to color for PW lecture videos
 dense_threshold: 0.3
+edge_threshold: 4.0  # Edge change threshold for transition detection
 neg_ratio: 1.0
 train_split: 0.7
 val_split: 0.15

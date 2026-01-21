@@ -1,11 +1,9 @@
+# Python
 /.venv
 .venv/
-/data/frames/
-/data/raw_videos/
-/outputs/
-/experiments/
-/models/
-/__pycache__/
+venv/
+env/
+__pycache__/
 *.pyc
 *.pyd
 *.pyo
@@ -13,6 +11,45 @@
 *.egg-info/
 /.pytest_cache/
 /.mypy_cache/
-*.log
-dataset.tfrecord
+
+# Data directories
+/data/frames/
+/data/raw_videos/
+/data/testing_videos/
+/data/processed_*/
+
+# Outputs and experiments
+/outputs/
+/experiments/
+/results*/
+/best_frames*/
+
+# Models and cache
+/models/*.pkl
+/models/*.pth
+feature_cache/
 *.npz
+
+# Logs and temp files
+*.log
+*.txt
+!requirements*.txt
+
+# Archive
+/archive/
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Dataset files (too large for git)
+*.csv
+!**/annotation*.csv

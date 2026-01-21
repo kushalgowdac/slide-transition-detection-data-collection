@@ -1,0 +1,30 @@
+# GPU-Accelerated Requirements
+# Install these for GPU support with CUDA
+
+# Core dependencies (from requirements.txt)
+numpy>=1.24.0
+pandas>=2.0.0
+opencv-python>=4.8.0
+scikit-image>=0.21.0
+scikit-learn>=1.3.0
+tqdm>=4.65.0
+imagehash>=4.3.1
+Pillow>=10.0.0
+
+# PyTorch with CUDA 11.8 (adjust version based on your CUDA version)
+# For CUDA 11.8:
+torch>=2.0.0
+torchvision>=0.15.0
+torchaudio>=2.0.0
+
+# For CUDA 12.1 (newer GPUs):
+# torch>=2.1.0+cu121
+# torchvision>=0.16.0+cu121
+# torchaudio>=2.1.0+cu121
+# Install with: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Optional: GPU-accelerated OpenCV (requires manual build)
+# opencv-contrib-python (includes CUDA modules if built with CUDA support)
+
+# Monitoring and profiling
+nvidia-ml-py3>=7.352.0  # For GPU monitoring

@@ -18,15 +18,19 @@ import datetime
 import random
 
 class LectureFrameExtractor:
-    def __init__(self, output_dir='data/frames', resize=None, color_mode='color'):
+    def __init__(self, output_dir='data/frames', resize=None, color_mode='color', edge_threshold=12.0, skin_ratio_thresh=0.12):
         """output_dir: base path where per-video folders are created
         resize: tuple (w,h) or None
         color_mode: 'color' or 'gray' - determines saved image mode
+        edge_threshold: Laplacian edge-change threshold to flag transitions (whiteboard-friendly)
+        skin_ratio_thresh: minimum skin-pixel ratio to mark frame as occluded
         """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.resize = resize
         self.color_mode = color_mode
+        self.edge_threshold = edge_threshold
+        self.skin_ratio_thresh = skin_ratio_thresh
         
     def extract_frames(self, video_path, fps=1.0, dense_threshold=0.3):
         """
@@ -72,11 +76,13 @@ class LectureFrameExtractor:
             
             should_save = (frame_idx % frame_skip == 0)
             
-            # Dense sampling near changes
+            # Dense sampling near changes (histogram + Laplacian edge change)
             is_transition = False
+            edge_change = 0.0
             if prev_gray is not None:
                 hist_diff = self._histogram_diff(prev_gray, gray)
-                if hist_diff > dense_threshold:
+                edge_change = self._edge_change(prev_gray, gray)
+                if hist_diff > dense_threshold or edge_change > self.edge_threshold:
                     should_save = True
                     is_transition = True
             
@@ -89,10 +95,18 @@ class LectureFrameExtractor:
                     except Exception:
                         pass
 
+                metric_frame = frame_out
+                metric_gray = cv2.cvtColor(metric_frame, cv2.COLOR_BGR2GRAY)
                 if self.color_mode == 'gray':
-                    save_img = cv2.cvtColor(frame_out, cv2.COLOR_BGR2GRAY)
+                    save_img = metric_gray
                 else:
                     save_img = frame_out
+
+                skin_ratio = self._skin_ratio(metric_frame)
+                is_occluded = 1 if skin_ratio > self.skin_ratio_thresh else 0
+                content_fullness = self._content_fullness(metric_gray)
+                frame_quality = self._frame_quality(metric_gray)
+                board_type = self._estimate_board_type(metric_frame, metric_gray)
 
                 # Save frame
                 frame_filename = f"{video_name}_frame_{saved_count:05d}_{timestamp:.2f}s.jpg"
@@ -132,6 +146,12 @@ class LectureFrameExtractor:
                     'timestamp': timestamp,
                     'saved_count': saved_count,
                     'is_transition': bool(is_transition),
+                    'edge_change': float(edge_change),
+                    'is_occluded': int(is_occluded),
+                    'skin_ratio': float(skin_ratio),
+                    'content_fullness': float(content_fullness),
+                    'frame_quality': float(frame_quality),
+                    'board_type': board_type,
                     'video_fps': float(video_fps),
                     'video_total_frames': int(total_frames),
                     'source_video': str(video_path)
@@ -159,6 +179,58 @@ class LectureFrameExtractor:
         hist2 = cv2.normalize(hist2, hist2).flatten()
         
         return cv2.compareHist(hist1, hist2, cv2.HISTCMP_BHATTACHARYYA)
+
+    def _edge_change(self, img1, img2):
+        """Mean absolute Laplacian difference (edge change score)."""
+        lap1 = cv2.Laplacian(img1, cv2.CV_64F)
+        lap2 = cv2.Laplacian(img2, cv2.CV_64F)
+        if lap1.shape != lap2.shape:
+            h, w = min(lap1.shape[0], lap2.shape[0]), min(lap1.shape[1], lap2.shape[1])
+            lap1 = cv2.resize(lap1, (w, h))
+            lap2 = cv2.resize(lap2, (w, h))
+        return float(np.mean(np.abs(lap1 - lap2)))
+
+    def _skin_ratio(self, bgr_img):
+        """Estimate skin-area ratio using HSV thresholds (coarse occlusion proxy)."""
+        hsv = cv2.cvtColor(bgr_img, cv2.COLOR_BGR2HSV)
+        lower1 = np.array([0, 30, 60], dtype=np.uint8)
+        upper1 = np.array([20, 150, 255], dtype=np.uint8)
+        lower2 = np.array([170, 30, 60], dtype=np.uint8)
+        upper2 = np.array([179, 150, 255], dtype=np.uint8)
+        mask1 = cv2.inRange(hsv, lower1, upper1)
+        mask2 = cv2.inRange(hsv, lower2, upper2)
+        skin_mask = cv2.bitwise_or(mask1, mask2)
+        return float(np.count_nonzero(skin_mask) / skin_mask.size)
+
+    def _content_fullness(self, gray_img):
+        """Ratio of non-background pixels (after Otsu threshold)."""
+        blur = cv2.GaussianBlur(gray_img, (5, 5), 0)
+        _, th = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        ink_ratio = float(np.count_nonzero(255 - th) / th.size)
+        return max(0.0, min(1.0, ink_ratio))
+
+    def _frame_quality(self, gray_img):
+        """Combine sharpness (Laplacian var) and contrast into 0-1 score."""
+        lap_var = float(cv2.Laplacian(gray_img, cv2.CV_64F).var())
+        sharp_norm = lap_var / (lap_var + 1000.0)
+        contrast = float(np.std(gray_img))
+        contrast_norm = contrast / (contrast + 64.0)
+        score = 0.5 * sharp_norm + 0.5 * contrast_norm
+        return max(0.0, min(1.0, score))
+
+    def _estimate_board_type(self, bgr_img, gray_img):
+        """Heuristic board type classification: ppt / whiteboard / smartboard / unknown."""
+        sample = cv2.resize(bgr_img, (160, 90)) if bgr_img.shape[1] > 200 else bgr_img
+        gray_small = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+        whiteness = float(np.count_nonzero(gray_small > 200) / gray_small.size)
+        color_var = float(np.mean(np.std(sample, axis=(0, 1))))
+        if whiteness > 0.72 and color_var < 20:
+            return 'whiteboard'
+        if color_var > 25 and whiteness < 0.85:
+            return 'ppt'
+        if 0.4 < whiteness < 0.9 and color_var >= 18:
+            return 'smartboard'
+        return 'unknown'
 
 
 class FeatureExtractor:
@@ -265,10 +337,12 @@ def main():
                         help='Path to a video file or a directory containing videos')
     parser.add_argument('--fps', type=float, default=1.0, help='Base frames per second to extract')
     parser.add_argument('--dense-threshold', type=float, default=0.3, help='Histogram diff threshold for dense sampling')
+    parser.add_argument('--edge-threshold', type=float, default=12.0, help='Laplacian edge-change threshold for dense sampling (whiteboard-friendly)')
     parser.add_argument('--output', '-o', default='data', help='Base output directory (frames and annotations will be created inside)')
     parser.add_argument('--no-features', action='store_true', help='Only extract frames, skip computing features')
     parser.add_argument('--resize', help='Resize saved frames, format WxH (e.g. 640x360)', default=None)
     parser.add_argument('--color-mode', choices=['color', 'gray'], default='color', help='Saved image color mode')
+    parser.add_argument('--occlusion-skin-ratio', type=float, default=0.12, help='Skin-area ratio above which frame is flagged occluded')
     parser.add_argument('--neg-ratio', type=float, default=1.0, help='Number of negatives per positive to sample (balanced dataset)')
     parser.add_argument('--train-split', type=float, default=0.7, help='Fraction of videos for training')
     parser.add_argument('--val-split', type=float, default=0.15, help='Fraction of videos for validation')
@@ -296,7 +370,13 @@ def main():
             print('Invalid --resize format, expected WxH (e.g. 640x360)')
             sys.exit(1)
 
-    extractor = LectureFrameExtractor(output_dir=str(frames_output), resize=resize_tuple, color_mode=args.color_mode)
+    extractor = LectureFrameExtractor(
+        output_dir=str(frames_output),
+        resize=resize_tuple,
+        color_mode=args.color_mode,
+        edge_threshold=args.edge_threshold,
+        skin_ratio_thresh=args.occlusion_skin_ratio
+    )
 
     video_path = Path(args.video)
     all_frames = []
@@ -325,6 +405,10 @@ def main():
 
     frames_df.to_csv(annotations_dir / 'frames_metadata.csv', index=False)
     print(f"Saved frame metadata: {len(frames_df)} frames -> {annotations_dir / 'frames_metadata.csv'}")
+    
+    # Create checkpoint file for resume capability
+    checkpoint_file = annotations_dir / '.extraction_complete'
+    checkpoint_file.touch()
 
     if frames_df.empty or args.no_features:
         if frames_df.empty:
@@ -402,6 +486,12 @@ def main():
                     'label': int(curr.get('is_transition', False)),
                     'slide_id': int(curr.get('slide_id', 0)),
                     'md5': curr.get('md5', ''),
+                    'edge_change': float(curr.get('edge_change', 0.0)),
+                    'is_occluded': int(curr.get('is_occluded', 0)),
+                    'skin_ratio': float(curr.get('skin_ratio', 0.0)),
+                    'content_fullness': float(curr.get('content_fullness', 0.0)),
+                    'frame_quality': float(curr.get('frame_quality', 0.0)),
+                    'board_type': curr.get('board_type', 'unknown'),
                     'video_path': curr.get('source_video', '')
                 })
         sampled_manifest = pd.DataFrame(pairs)
@@ -511,6 +601,50 @@ def main():
     with open(annotations_dir / 'dataset_metadata.json', 'w') as fh:
         json.dump(dataset_info, fh, indent=2)
     print(f"Saved dataset metadata -> {annotations_dir / 'dataset_metadata.json'}")
+
+    # ----------------- Select best slide screenshots -----------------
+    print('\nSelecting best slide screenshots (pre-transition, not occluded, full content)...')
+    from src.slide_selector import SlideSelector
+    
+    # ENHANCED: Relax transition detection to catch erase/rewrite scenarios
+    # Re-detect transitions with lower thresholds (captures whiteboard erase/write cycles)
+    frames_df_enhanced = frames_df.copy()
+    frames_df_enhanced = frames_df_enhanced.sort_values('timestamp').reset_index(drop=True)
+    
+    # Mark transitions based on: high edge change OR significant content change
+    relaxed_transitions = (
+        (frames_df_enhanced['edge_change'] > 4.0) |  # Lower than default edge_threshold
+        (frames_df_enhanced['content_fullness'].diff().abs() > 0.15)  # Content change (erase/rewrite)
+    )
+    frames_df_enhanced['is_transition'] = relaxed_transitions
+    
+    print(f"  Original transitions (strict): {len(frames_df[frames_df['is_transition']==True])}")
+    print(f"  Enhanced transitions (relaxed): {frames_df_enhanced['is_transition'].sum()}")
+    
+    selector = SlideSelector(
+        occlusion_threshold=1.0,   # allow all occlusion levels (we score it instead of filtering)
+        min_content_fullness=0.5,  # relaxed threshold
+        min_frame_quality=0.2      # relaxed threshold
+    )
+    
+    # Use enhanced detection: capture 10 frames before each transition, keep top 5 by score
+    best_slides_df = selector.select_best_slides(
+        frames_df_enhanced, 
+        lookback_window=10,         # look back 10 seconds before transition
+        top_n_per_transition=5      # keep 5 best candidates per transition
+    )
+    
+    if not best_slides_df.empty:
+        selector.save_slide_manifest(best_slides_df, annotations_dir / 'best_slides.csv')
+        print(f"\n✓ Best slides summary:")
+        print(f"  Total transitions detected: {len(frames_df[frames_df['is_transition']==True])}")
+        print(f"  Best slide candidates selected: {len(best_slides_df)}")
+        print(f"  Frames per transition: up to 5")
+        print(f"  Average content_fullness: {best_slides_df['content_fullness'].mean():.3f}")
+        print(f"  Average frame_quality: {best_slides_df['frame_quality'].mean():.3f}")
+        print(f"  Clear frames (not occluded): {len(best_slides_df[best_slides_df['is_occluded']==0])}/{len(best_slides_df)}")
+    else:
+        print("⚠ No best slides found; adjust thresholds or check transitions in frames_metadata.csv")
 
     # ----------------- Export dataset for training -----------------
     if args.export_format and args.export_format != 'none':

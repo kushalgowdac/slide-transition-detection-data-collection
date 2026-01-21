@@ -1,1 +1,1 @@
-video_id,frame_path,frame_idx,timestamp,saved_count,is_transition,video_fps,video_total_frames,source_video,prev_frame_path,next_frame_path,label,slide_id,video_path,sample_id
+video_id,frame_path,frame_idx,timestamp,saved_count,is_transition,edge_change,is_occluded,skin_ratio,content_fullness,frame_quality,board_type,video_fps,video_total_frames,source_video,prev_frame_path,next_frame_path,label,slide_id,video_path,sample_id
